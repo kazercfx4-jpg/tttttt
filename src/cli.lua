@@ -1,12 +1,12 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- cli.lua
+-- test.lua
 -- This script contains the Code for the Prometheus CLI
 
 -- Configure package.path for requiring Prometheus
 local function script_path()
 	local str = debug.getinfo(2, "S").source:sub(2)
-	return str:match("(.*[/%\\])")
+	return str:match("(.*[/%\\])") or "";
 end
 package.path = script_path() .. "?.lua;" .. package.path;
 ---@diagnostic disable-next-line: different-requires
@@ -93,16 +93,22 @@ while i <= #arg do
             prettyPrint = true;
         elseif curr == "--saveerrors" then
             -- Override error callback
-            Prometheus.Logger.errorCallback =  function(...)
-                print(Prometheus.colors(Prometheus.Config.NameUpper .. ": " .. ..., "red"))
-                
+            Prometheus.Logger.errorCallback = function(...)
                 local args = {...};
-                local message = table.concat(args, " ");
+                local message = ""
+                for i, v in ipairs(args) do
+                    if i > 1 then message = message .. " " end
+                    message = message .. tostring(v)
+                end
                 
-                local fileName = sourceFile:sub(-4) == ".lua" and sourceFile:sub(0, -5) .. ".error.txt" or sourceFile .. ".error.txt";
+                print(Prometheus.colors(Prometheus.Config.NameUpper .. ": " .. message, "red"))
+                
+                local fileName = sourceFile and sourceFile:sub(-4) == ".lua" and sourceFile:sub(0, -5) .. ".error.txt" or (sourceFile or "error") .. ".error.txt";
                 local handle = io.open(fileName, "w");
-                handle:write(message);
-                handle:close();
+                if handle then
+                    handle:write(message);
+                    handle:close();
+                end
 
                 os.exit(1);
             end;
@@ -143,12 +149,52 @@ if not outFile then
     end
 end
 
-local source = table.concat(lines_from(sourceFile), "\n");
+-- Read source file safely
+local source = "";
+local sourceLines = lines_from(sourceFile);
+if #sourceLines == 0 then
+    Prometheus.Logger:error(string.format("Could not read source file \"%s\" or file is empty!", sourceFile));
+end
+source = table.concat(sourceLines, "\n");
+
 local pipeline = Prometheus.Pipeline:fromConfig(config);
-local out = pipeline:apply(source, sourceFile);
+
+-- Apply obfuscation with detailed error handling
+local success, result = pcall(function()
+    return pipeline:apply(source, sourceFile);
+end);
+
+if not success then
+    local errorMsg = tostring(result) or "Unknown error during obfuscation";
+    -- Extract just the error message, not file paths
+    if errorMsg:match("%.lua:%d+:") then
+        errorMsg = errorMsg:match("%.lua:%d+:%s*(.+)") or errorMsg;
+    end
+    Prometheus.Logger:error(string.format("Obfuscation failed: %s", errorMsg));
+    return;
+end
+
+if not result or result == "" then
+    Prometheus.Logger:error("Obfuscation produced empty result");
+    return;
+end
+
+local out = result;
 Prometheus.Logger:info(string.format("Writing output to \"%s\"", outFile));
 
--- Write Output
-local handle = io.open(outFile, "w");
-handle:write(out);
-handle:close();
+-- Write Output with error checking
+local handle, err = io.open(outFile, "w");
+if not handle then
+    Prometheus.Logger:error(string.format("Could not open output file \"%s\" for writing: %s", outFile, err or "Unknown error"));
+    return;
+end
+
+local writeSuccess, writeErr = pcall(function()
+    handle:write(out);
+    handle:close();
+end);
+
+if not writeSuccess then
+    Prometheus.Logger:error(string.format("Error writing to output file: %s", writeErr or "Unknown write error"));
+    return;
+end
