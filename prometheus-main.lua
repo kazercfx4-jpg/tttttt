@@ -1,7 +1,4 @@
--- Extensions pour les archives
-local function getFileExtension(filename)
-    return filename:match("^.+(%..+)$") or ""
-end-- Configure package.path for requiring Prometheus
+-- Configure package.path for requiring Prometheus
 local function script_path()
 	local str = debug.getinfo(2, "S").source:sub(2)
 	return str:match("(.*[/%\\])") or "";
@@ -19,28 +16,45 @@ local function getFileExtension(filename)
     return filename:match("^.+(%..+)$") or ""
 end
 
--- Fonction pour extraire les archives ZIP
+-- Fonction pour extraire les archives ZIP (version corrigée)
 local function extractZip(inputPath, extractPath)
-    local success = os.execute(string.format('unzip -q "%s" -d "%s"', inputPath, extractPath))
-    return success == 0
+    print("Tentative d'extraction de:", inputPath, "vers:", extractPath)
+    -- Créer le dossier de destination
+    os.execute(string.format('mkdir -p "%s"', extractPath))
+    -- Essayer différentes variantes de la commande unzip
+    local commands = {
+        string.format('unzip -o -q "%s" -d "%s"', inputPath, extractPath),
+        string.format('unzip -o "%s" -d "%s"', inputPath, extractPath),
+        string.format('cd "%s" && unzip -o "%s"', extractPath, inputPath),
+    }
+    
+    for i, cmd in ipairs(commands) do
+        print("Essai commande " .. i .. ":", cmd)
+        local result = os.execute(cmd)
+        print("Résultat:", result)
+        if result == 0 or result == true then
+            return true
+        end
+    end
+    return false
 end
 
 -- Fonction pour créer une archive ZIP
 local function createZip(outputPath, sourceDir)
     local success = os.execute(string.format('cd "%s" && zip -r "%s" .', sourceDir, outputPath))
-    return success == 0
+    return success == 0 or success == true
 end
 
 -- Fonction pour extraire les archives RAR
 local function extractRar(inputPath, extractPath)
     local success = os.execute(string.format('unrar x "%s" "%s"', inputPath, extractPath))
-    return success == 0
+    return success == 0 or success == true
 end
 
 -- Fonction pour créer une archive RAR
 local function createRar(outputPath, sourceDir)
     local success = os.execute(string.format('cd "%s" && rar a "%s" *', sourceDir, outputPath))
-    return success == 0
+    return success == 0 or success == true
 end
 
 -- Fonction pour lire un fichier
@@ -73,11 +87,13 @@ end
 
 -- Fonction pour parcourir les fichiers d'un dossier
 local function walkDirectory(dir, callback)
-    local handle = io.popen(string.format('find "%s" -type f', dir))
+    local handle = io.popen(string.format('find "%s" -type f 2>/dev/null', dir))
     if not handle then return end
     
     for file in handle:lines() do
-        callback(file)
+        if file and file ~= "" then
+            callback(file)
+        end
     end
     handle:close()
 end
@@ -121,9 +137,12 @@ local function processArchive(inputPath, outputPath, preset)
         return false
     end
     
-    -- Créer des dossiers temporaires
-    local tempExtract = "/tmp/prometheus_extract_" .. os.time()
-    local tempOutput = "/tmp/prometheus_output_" .. os.time()
+    -- Créer des dossiers temporaires avec des noms uniques
+    local tempExtract = "/tmp/prometheus_extract_" .. os.time() .. "_" .. math.random(1000, 9999)
+    local tempOutput = "/tmp/prometheus_output_" .. os.time() .. "_" .. math.random(1000, 9999)
+    
+    print("Dossier d'extraction temporaire:", tempExtract)
+    print("Dossier de sortie temporaire:", tempOutput)
     
     createDirectory(tempExtract)
     createDirectory(tempOutput)
@@ -138,10 +157,15 @@ local function processArchive(inputPath, outputPath, preset)
     
     if not extractSuccess then
         print("Erreur: Impossible d'extraire l'archive")
+        print("Vérification du contenu du dossier d'extraction...")
+        os.execute("ls -la " .. tempExtract)
         removeDirectory(tempExtract)
         removeDirectory(tempOutput)
         return false
     end
+    
+    print("Extraction réussie! Contenu du dossier:")
+    os.execute("find " .. tempExtract .. " -type f")
     
     -- Chercher fxmanifest.lua et parser escrow_ignore
     local escrowIgnore = {}
@@ -154,7 +178,10 @@ local function processArchive(inputPath, outputPath, preset)
             local manifestContent = readFile(file)
             if manifestContent then
                 escrowIgnore = parseEscrowIgnore(manifestContent)
-                print("Fichiers ignorés trouvés dans fxmanifest.lua:", table.concat(escrowIgnore, ", "))
+                print("Fichiers ignorés trouvés dans fxmanifest.lua:")
+                for k, _ in pairs(escrowIgnore) do
+                    print("  - " .. k)
+                end
             end
         end
     end)
@@ -214,6 +241,8 @@ local function processArchive(inputPath, outputPath, preset)
             end
         end
     end)
+    
+    print("Création de l'archive de sortie...")
     
     -- Créer la nouvelle archive
     local createSuccess = false
