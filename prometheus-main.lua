@@ -1,4 +1,18 @@
-require("cli")
+-- Extensions pour les archives
+local function getFileExtension(filename)
+    return filename:match("^.+(%..+)$") or ""
+end-- Configure package.path for requiring Prometheus
+local function script_path()
+	local str = debug.getinfo(2, "S").source:sub(2)
+	return str:match("(.*[/%\\])") or "";
+end
+package.path = script_path() .. "?.lua;" .. package.path;
+
+-- Require Prometheus modules directly
+local Prometheus = require("src.prometheus");
+local Ast = require("src.prometheus.ast");
+local Parser = require("src.prometheus.parser");
+local Enums = require("src.prometheus.enums");
 
 -- Extensions pour les archives
 local function getFileExtension(filename)
@@ -172,11 +186,9 @@ local function processArchive(inputPath, outputPath, preset)
                 -- Obfusquer le fichier
                 local content = readFile(file)
                 if content then
-                    -- Utiliser Prometheus pour obfusquer
-                    local Prometheus = require("src.prometheus")
-                    local pipeline = Prometheus.Pipeline:fromConfig(Prometheus.Presets[preset] or Prometheus.Presets.Strong)
-                    
                     local success, obfuscated = pcall(function()
+                        -- Utiliser Prometheus pour obfusquer
+                        local pipeline = Prometheus.Pipeline:fromConfig(Prometheus.Presets[preset] or Prometheus.Presets.Strong)
                         return pipeline:apply(content, filename)
                     end)
                     
@@ -234,6 +246,14 @@ local function parseArgs()
     for i = 1, #arg do
         if arg[i] == "--preset" and arg[i + 1] then
             preset = arg[i + 1]
+        elseif arg[i] == "--input" and arg[i + 1] then
+            inputFile = arg[i + 1]
+            local ext = getFileExtension(inputFile):lower()
+            if ext == ".zip" or ext == ".rar" then
+                isArchive = true
+            end
+        elseif arg[i] == "--output" and arg[i + 1] then
+            outputFile = arg[i + 1]
         elseif not inputFile and arg[i]:match("%.") then
             inputFile = arg[i]
             local ext = getFileExtension(inputFile):lower()
@@ -267,10 +287,8 @@ else
     if inputFile and getFileExtension(inputFile):lower() == ".lua" then
         local content = readFile(inputFile)
         if content then
-            local Prometheus = require("src.prometheus")
-            local pipeline = Prometheus.Pipeline:fromConfig(Prometheus.Presets[preset] or Prometheus.Presets.Strong)
-            
             local success, obfuscated = pcall(function()
+                local pipeline = Prometheus.Pipeline:fromConfig(Prometheus.Presets[preset] or Prometheus.Presets.Strong)
                 return pipeline:apply(content, inputFile)
             end)
             
@@ -279,12 +297,25 @@ else
                 obfuscated = addWatermark(obfuscated)
                 
                 local outputFileName = outputFile or (inputFile:gsub("%.lua$", "_obfuscated.lua"))
-                writeFile(outputFileName, obfuscated)
-                print("Fichier obfusqué: " .. outputFileName)
+                local writeSuccess = writeFile(outputFileName, obfuscated)
+                if writeSuccess then
+                    print("Fichier obfusqué: " .. outputFileName)
+                else
+                    print("Erreur: Impossible d'écrire le fichier de sortie: " .. outputFileName)
+                    os.exit(1)
+                end
             else
                 print("Erreur lors de l'obfuscation: " .. tostring(obfuscated))
                 os.exit(1)
             end
+        else
+            print("Erreur: Impossible de lire le fichier d'entrée: " .. inputFile)
+            os.exit(1)
         end
+    else
+        print("Erreur: Fichier d'entrée non spécifié ou non valide")
+        print("Usage: lua prometheus-main.lua <input.lua> [output.lua] [--preset <preset>]")
+        print("   ou: lua prometheus-main.lua <input.zip/rar> <output.zip/rar> [--preset <preset>]")
+        os.exit(1)
     end
 end
